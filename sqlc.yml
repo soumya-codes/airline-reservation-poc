@@ -1,0 +1,55 @@
+version: "2"
+
+overrides:
+  go:
+    rename:
+      id: "Identifier"
+    overrides:
+      - db_type: "timestamp"
+        engine: "postgresql"
+        go_type:
+          import: "time"
+          type: "Time"
+      - db_type: "serial"
+        engine: "postgresql"
+        go_type:
+          import: ""
+          type: "int32"
+      - db_type: "bigserial"
+        engine: "postgresql"
+        go_type:
+          import: ""
+          type: "int64"
+      - db_type: "integer"
+        engine: "postgresql"
+        go_type:
+          import: ""
+          type: "int32"
+
+sql:
+  - schema: "deployment/db/schema/0001-initial-schema.sql"
+    queries:
+      - "deployment/db/query/passenger.sql"
+      - "deployment/db/query/reservation.sql"
+      - "deployment/db/query/trip.sql"
+    rules:
+      - sqlc/db-prepare
+    engine: "postgresql"
+    gen:
+      go:
+        package: "store"
+        out: "internal/store"
+        emit_json_tags: true
+        emit_db_tags: true
+        omit_unused_structs: true
+        emit_prepared_queries: true
+        sql_package: "pgx/v5"
+        overrides:
+          - column: "reservation.passenger_id"
+            go_type:
+              import: ""
+              type: "int32"
+          - column: "trip.schedule"
+            go_type:
+              import: "time"
+              type: "Time"

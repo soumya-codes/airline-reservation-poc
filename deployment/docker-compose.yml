@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  init_log:
+    image: cgr.dev/chainguard/busybox:latest
+    container_name: init_log
+    user: root
+    volumes:
+      - pg_log:/var/log/postgresql
+    entrypoint: ["sh", "-c", "mkdir -p /var/log/postgresql && chown -R 70:70 /var/log/postgresql"]
+
+  db:
+    image: cgr.dev/chainguard/postgres:latest
+    container_name: airline_reservation_db
+    restart: always
+    environment:
+      PGUSER: postgres # If PGUSER is not set, Postgres defaults to the root user of OS resulting in constant permission issues, like, fatal: role "root" does not exist in postgres logs
+      PGPASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: airline_reservation_db
+      TZ: IST
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - pg_config:/var/lib/postgresql/config
+      - ./config/postgresql.conf:/var/lib/postgresql/config/postgresql.conf
+      - pg_log:/var/log/postgresql
+    ports:
+      - "5432:5432"
+    depends_on:
+      init_log:
+        condition: service_completed_successfully
+    command: ["-c", "config_file=/var/lib/postgresql/config/postgresql.conf"]
+    deploy:
+      resources:
+        limits:
+          cpus: '8'  # Allocate 4 CPUs
+          memory: 2G # Allocate 2GB of RAM
+        reservations:
+          cpus: '1'  # Reserve 1 CPU
+          memory: 1G # Reserve 1GB of RAM
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready", "-U", "postgres", "-d", "airline_reservation_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  init_db:
+    image: cgr.dev/chainguard/postgres:latest
+    container_name: init_db
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./db/schema/0001-initial-schema.sql:/docker-entrypoint-initdb.d/0001-initial-schema.sql
+    environment:
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: airline_reservation_db
+    entrypoint: [
+      "/bin/bash",
+      "-c",
+      "export PGPASSWORD=postgres && until pg_isready -h db -U postgres -d airline_reservation_db; do sleep 1; done && psql -h db -U postgres -d airline_reservation_db -f /docker-entrypoint-initdb.d/0001-initial-schema.sql"
+    ]
+
+volumes:
+  pg_data:
+  pg_config:
+  pg_log:
