@@ -7,29 +7,29 @@ import (
 	"time"
 
 	"github.com/soumya-codes/airline-reservation-poc/config"
-	bookingseat "github.com/soumya-codes/airline-reservation-poc/internal/booking/seat"
-	postgrestransaction "github.com/soumya-codes/airline-reservation-poc/internal/postgres/transaction"
+	"github.com/soumya-codes/airline-reservation-poc/internal/booking/seat"
+	pgtx "github.com/soumya-codes/airline-reservation-poc/internal/postgres/transaction"
 )
 
 func TestBookSeats(t *testing.T) {
+	isolationLevels := []pgtx.IsolationLevel{
+		pgtx.ReadCommitted,
+		pgtx.RepeatableRead,
+		pgtx.Serializable,
+	}
+
 	lockStrategies := []struct {
-		strategy     bookingseat.LockStrategy
+		strategy     seat.LockStrategy
 		strategyName string
 	}{
-		{strategy: bookingseat.GetSeatWithNoLock, strategyName: "GetSeatWithNoLock"},
-		{strategy: bookingseat.GetSeatWithSharedLock, strategyName: "GetSeatWithSharedLock"},
-		{strategy: bookingseat.GetSeatWithSharedLockSkipped, strategyName: "GetSeatWithSharedLockSkipped"},
-		{strategy: bookingseat.GetSeatWithExclusiveLock, strategyName: "GetSeatWithExclusiveLock"},
-		{strategy: bookingseat.GetSeatWithExclusiveLockSkipped, strategyName: "GetSeatWithExclusiveLockSkipped"},
+		{strategy: seat.GetSeatWithNoLock, strategyName: "GetSeatWithNoLock"},
+		{strategy: seat.GetSeatWithSharedLock, strategyName: "GetSeatWithSharedLock"},
+		{strategy: seat.GetSeatWithSharedLockSkipped, strategyName: "GetSeatWithSharedLockSkipped"},
+		{strategy: seat.GetSeatWithExclusiveLock, strategyName: "GetSeatWithExclusiveLock"},
+		{strategy: seat.GetSeatWithExclusiveLockSkipped, strategyName: "GetSeatWithExclusiveLockSkipped"},
 	}
 
 	poolSizes := []int{1, 5, 50, 180}
-
-	isolationLevels := []postgrestransaction.IsolationLevel{
-		postgrestransaction.ReadCommitted,
-		postgrestransaction.RepeatableRead,
-		postgrestransaction.Serializable,
-	}
 
 	for _, isolationLevel := range isolationLevels {
 		for _, strategy := range lockStrategies {

@@ -3,3 +3,12 @@ vendor/
 
 # Ignore all .idea files and directories
 .idea/
+
+# Other common exclusions
+*.log
+*.cache
+.DS_Store
+*.swp
+*.txt
+*.out
+*.tmp

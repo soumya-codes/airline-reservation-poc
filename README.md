@@ -48,7 +48,7 @@ The project includes table-driven tests that cover various combinations of conne
 
 ### Test Suite
 **make test** - Runs the test cases with the below combinations of test variables.
-* **Connection pool sizes:** [1, 5, 10, 20]
+* **Connection pool sizes:** [1, 5, 50, 180]
 * **Isolation levels:** 
     * Read Committed
     * Repeatable Read
@@ -86,3 +86,25 @@ git clone git@github.com:soumya-codes/airline-reservation-poc.git
 make test
  ```
 **Note**: The project uses `go version 1.22`, you may have to tidy the Go modules before running the tests.
+
+## Sample Output
+The test cases generate output in the below format:
+```
+=== RUN   TestBookSeats/IsolationLevel=READ_COMMITTED_LockStrategy=GetSeatWithNoLock_PoolSize=180
+Total elapsed time: 181.691333ms
+Seat: 1A, is assigned to Passenger: Emma Johnson
+Seat: 1B, is assigned to Passenger: Nirav Trivedi
+
+
+Total time taken to book the seats for trip-id: 1 is 181.691333ms
+
+x  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+x  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+.  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+
+
+.  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+.  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+.  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .
+
+```

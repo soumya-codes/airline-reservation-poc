@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
-	
+
 	"github.com/soumya-codes/airline-reservation-poc/config"
 	bookingseat "github.com/soumya-codes/airline-reservation-poc/internal/booking/seat"
 	pgconn "github.com/soumya-codes/airline-reservation-poc/internal/postgres/connection"
@@ -56,6 +56,12 @@ func BookSeats(ctx context.Context, config *config.Config) error {
 		return fmt.Errorf("error getting next available tripID: %v", err)
 	}
 
+	// Mark the tripID, so its not considered for booking again
+	err = MarkTripForBooking(ctx, q, tripID)
+	if err != nil {
+		return fmt.Errorf("error marking tripID as booked: %w", err)
+	}
+
 	// Create a connection pool of size maxConn
 	pool, err := pgpool.NewConnectionPool(pgConfig, config.MaxConn)
 	if err != nil {
@@ -77,12 +83,6 @@ func BookSeats(ctx context.Context, config *config.Config) error {
 	// Wait for all the goroutines to finish, or an error to occur
 	if err := g.Wait(); err != nil {
 		return fmt.Errorf("error booking seats: %w", err)
-	}
-
-	// Mark the tripID, so its not considered for booking again
-	err = MarkTripForBooking(ctx, q, tripID)
-	if err != nil {
-		return fmt.Errorf("error marking tripID as booked: %w", err)
 	}
 
 	elapsed := time.Since(start)
@@ -180,13 +180,12 @@ func MarkTripForBooking(ctx context.Context, q *store.Queries, tripID int32) err
 }
 
 func printBookingDetails(reservations []reservation, tripId int32, t time.Duration) {
-	/*
-		for _, reservation := range reservations {
-			if reservation.passengerName != "" {
-				fmt.Printf("Seat: %s, is assigned to Passenger: %s\n", reservation.seatNumber, reservation.passengerName)
-			}
+
+	for _, reservation := range reservations {
+		if reservation.passengerName != "" {
+			fmt.Printf("Seat: %s, is assigned to Passenger: %s\n", reservation.seatNumber, reservation.passengerName)
 		}
-	*/
+	}
 
 	fmt.Print("\n\n")
 	fmt.Printf("Total time taken to book the seats for trip-id: %d is %s\n\n", tripId, t)
@@ -211,4 +210,6 @@ func printBookingDetails(reservations []reservation, tripId int32, t time.Durati
 		// Move to the next column
 		fmt.Println()
 	}
+
+	fmt.Print("\n\n")
 }
