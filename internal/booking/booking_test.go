@@ -31,18 +31,22 @@ func TestBookSeats(t *testing.T) {
 
 	poolSizes := []int{1, 5, 50, 180}
 
+	retries := 3
+
 	for _, isolationLevel := range isolationLevels {
 		for _, strategy := range lockStrategies {
 			for _, poolSize := range poolSizes {
-				t.Run(fmt.Sprintf("IsolationLevel=%v_LockStrategy=%s_PoolSize=%d",
-					isolationLevel, strategy.strategyName, poolSize),
+				t.Run(fmt.Sprintf("IsolationLevel=%v_LockStrategy=%s_PoolSize=%d_Retries=%d",
+					isolationLevel, strategy.strategyName, poolSize, retries),
 					func(t *testing.T) {
 						cfg := config.NewConfig(config.WithMaxConn(poolSize),
 							config.WithTxIsolation(isolationLevel),
-							config.WithLockStrategy(strategy.strategy))
+							config.WithLockStrategy(strategy.strategy),
+							config.WithMaxRetries(retries),
+						)
 
 						// Adjust the timeout based on your infra setup.
-						ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+						ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 						defer cancel()
 
 						err := BookSeats(ctx, cfg)

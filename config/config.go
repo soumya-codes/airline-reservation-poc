@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"log"
 	"time"
 
 	"github.com/soumya-codes/airline-reservation-poc/internal/booking/seat"
@@ -22,6 +23,8 @@ type Config struct {
 	Timeout        time.Duration
 	LockStrategy   func(ctx context.Context, q *store.Queries, tripID int32) (*seat.Seat, error)
 	TxIsolation    pgtx.IsolationLevel
+	// TODO: Implement a retry mechanism using the MaxRetries field
+	MaxRetries int
 }
 
 func DefaultConfig() *Config {
@@ -37,18 +40,36 @@ func DefaultConfig() *Config {
 		Timeout:      defaultTimeout,
 		LockStrategy: seat.GetSeatWithExclusiveLock,
 		TxIsolation:  defaultTxIsolation,
+		MaxRetries:   1,
 	}
 }
 
 type Option func(*Config)
 
 func WithMaxConn(maxConn int) Option {
+	if maxConn <= 0 {
+		log.Fatal("maxConn must be greater than 0")
+	}
+
 	return func(c *Config) {
 		c.MaxConn = maxConn
 	}
 }
 
+func WithMaxRetries(maxRetries int) Option {
+	if maxRetries <= 0 {
+		log.Fatal("maxRetries must be greater than 0")
+	}
+
+	return func(c *Config) {
+		c.MaxRetries = maxRetries
+	}
+}
+
 func WithTimeout(timeout time.Duration) Option {
+	if timeout <= 0 {
+		log.Fatal("timeout needs to be greater than 0")
+	}
 	return func(c *Config) {
 		c.Timeout = timeout
 	}

@@ -16,7 +16,7 @@ CREATE TABLE trip
     id         SERIAL PRIMARY KEY,
     airline_id INT       NOT NULL,
     schedule   TIMESTAMP NOT NULL,
-    completed  BOOLEAN   NOT NULL DEFAULT FALSE,
+    booked  BOOLEAN   NOT NULL DEFAULT FALSE,
     CONSTRAINT fk_airline FOREIGN KEY (airline_id) REFERENCES airline (id) ON DELETE CASCADE
 );
 

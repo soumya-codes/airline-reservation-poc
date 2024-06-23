@@ -23,7 +23,7 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - pg_config:/var/lib/postgresql/config
-      - ./config/postgresql.conf:/var/lib/postgresql/config/postgresql.conf
+      - ./db/config/postgresql.conf:/var/lib/postgresql/config/postgresql.conf
       - pg_log:/var/log/postgresql
     ports:
       - "5432:5432"

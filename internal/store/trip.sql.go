@@ -10,7 +10,7 @@ import (
 )
 
 const getNextAvailableTrip = `-- name: GetNextAvailableTrip :one
-SELECT id FROM trip WHERE completed = FALSE ORDER BY schedule LIMIT 1 FOR UPDATE SKIP LOCKED
+SELECT id FROM trip WHERE booked = FALSE ORDER BY schedule LIMIT 1 FOR UPDATE SKIP LOCKED
 `
 
 func (q *Queries) GetNextAvailableTrip(ctx context.Context) (int32, error) {
@@ -21,7 +21,7 @@ func (q *Queries) GetNextAvailableTrip(ctx context.Context) (int32, error) {
 }
 
 const markTripForBooking = `-- name: MarkTripForBooking :one
-UPDATE trip SET completed = TRUE WHERE id = $1 RETURNING 1
+UPDATE trip SET booked = TRUE WHERE id = $1 RETURNING 1
 `
 
 func (q *Queries) MarkTripForBooking(ctx context.Context, id int32) (int32, error) {

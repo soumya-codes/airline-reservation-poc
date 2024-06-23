@@ -3,12 +3,13 @@ package booking
 import (
 	"context"
 	"fmt"
-	"log"
+	"strings"
 	"sync"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
+	"github.com/jackc/pgx/v5"
+	pgconn2 "github.com/jackc/pgx/v5/pgconn"
+	"github.com/sirupsen/logrus"
 	"github.com/soumya-codes/airline-reservation-poc/config"
 	bookingseat "github.com/soumya-codes/airline-reservation-poc/internal/booking/seat"
 	pgconn "github.com/soumya-codes/airline-reservation-poc/internal/postgres/connection"
@@ -23,9 +24,15 @@ const (
 	aisleCol    = 2
 )
 
-type reservation struct {
-	seatNumber    string
+type booking struct {
 	passengerName string
+	seatNumber    int32
+	seatId        string
+}
+
+type bookingStatus struct {
+	booking
+	err error
 }
 
 func BookSeats(ctx context.Context, config *config.Config) error {
@@ -33,12 +40,12 @@ func BookSeats(ctx context.Context, config *config.Config) error {
 	pgConfig := config.PostgresConfig
 	conn, err := pgconn.NewConnection(pgConfig)
 	if err != nil {
-		log.Fatal("error connecting to DataBase", err)
+		return fmt.Errorf("error connecting to database to start the bookings: %w", err)
 	}
 
 	defer func() {
 		if err := pgconn.Close(conn); err != nil {
-			log.Fatal("error closing DataBase connection", err)
+			logrus.WithError(err).Error("error closing database connection")
 		}
 	}()
 
@@ -53,10 +60,10 @@ func BookSeats(ctx context.Context, config *config.Config) error {
 	// Get the next available tripID
 	tripID, err := GetNextAvailableTrip(ctx, q)
 	if err != nil {
-		return fmt.Errorf("error getting next available tripID: %v", err)
+		return fmt.Errorf("error getting next available tripID: %s", err.Error())
 	}
 
-	// Mark the tripID, so its not considered for booking again
+	// Mark the tripID, so it's not considered for booking again
 	err = MarkTripForBooking(ctx, q, tripID)
 	if err != nil {
 		return fmt.Errorf("error marking tripID as booked: %w", err)
@@ -65,33 +72,58 @@ func BookSeats(ctx context.Context, config *config.Config) error {
 	// Create a connection pool of size maxConn
 	pool, err := pgpool.NewConnectionPool(pgConfig, config.MaxConn)
 	if err != nil {
-		log.Fatalf("Error creating connection pool: %v", err)
+		return fmt.Errorf("error creating connection pool: %s", err.Error())
 	}
 
 	start := time.Now()
-	var g errgroup.Group
-	var mu sync.Mutex
-	reservations := make([]reservation, 180)
+
+	bks := make(chan bookingStatus, len(passengers))
+	var wg sync.WaitGroup
+
 	for _, passenger := range passengers {
+		wg.Add(1)
 		// Book a seat for the passenger
 		passenger := passenger // Not necessary for Golang versions >= 1.22
-		g.Go(func() error {
-			return bookSeatTask(ctx, tripID, passenger, pool, config.LockStrategy, config.TxIsolation, reservations, &mu)
-		})
+		go func() {
+			defer wg.Done()
+			bookSeatTask(
+				ctx,
+				tripID,
+				passenger,
+				pool,
+				config.LockStrategy,
+				config.TxIsolation,
+				bks,
+				config.MaxRetries)
+		}()
 	}
 
-	// Wait for all the goroutines to finish, or an error to occur
-	if err := g.Wait(); err != nil {
-		return fmt.Errorf("error booking seats: %w", err)
+	// Close the channel once all the goroutines are done
+	go func() {
+		wg.Wait()
+		close(bks)
+	}()
+
+	// Get the results from the channels and store them in the bookings and reservation slice
+	bookings := make([]string, 0)
+	reservations := make([]booking, int32(len(passengers)))
+	// Loop through the bookings channel to get booking info/error, the loop ends when bks channel is closed
+	for bk := range bks {
+		if bk.err != nil {
+			bookings = append(bookings, fmt.Sprintf("ERROR: couldn't book seat: %s", bk.err.Error()))
+		} else {
+			bookings = append(bookings, fmt.Sprintf("Seat: %s is booked for passenger: %s", bk.seatId, bk.passengerName))
+			reservations[(bk.seatNumber-1)%int32(len(passengers))] = bk.booking
+		}
 	}
 
 	elapsed := time.Since(start)
-	fmt.Printf("Total elapsed time: %s\n", elapsed)
-	printBookingDetails(reservations, tripID, elapsed)
+	defer printBookingAndReservationDetails(reservations, bookings, tripID, elapsed)
 
 	return nil
 }
 
+// GetPassengers retrieves the list of passengers from the database.
 func GetPassengers(ctx context.Context, q *store.Queries) ([]store.Passenger, error) {
 	// Get the list of passengers
 	passengers, err := q.GetPassengers(ctx)
@@ -102,6 +134,7 @@ func GetPassengers(ctx context.Context, q *store.Queries) ([]store.Passenger, er
 	return passengers, nil
 }
 
+// GetNextAvailableTrip retrieves the next available trip ID from the database.
 func GetNextAvailableTrip(ctx context.Context, q *store.Queries) (int32, error) {
 	// Get the next trip on schedule
 	tripID, err := q.GetNextAvailableTrip(ctx)
@@ -112,93 +145,226 @@ func GetNextAvailableTrip(ctx context.Context, q *store.Queries) (int32, error) 
 	return tripID, nil
 }
 
-func bookSeatTask(ctx context.Context,
-	tripID int32,
-	passenger store.Passenger,
-	pool *pgpool.ConnectionPool,
-	lockStrategy bookingseat.LockStrategy,
-	isolationLevel pgtx.IsolationLevel,
-	reservations []reservation,
-	mu *sync.Mutex) error {
-	// Acquire a connection from the pool
-	conn := pool.Acquire()
-	defer pool.Release(conn)
-
-	// Start a transaction
-	tx, err := pgtx.BeginTxWithIsolationLevel(ctx, conn, isolationLevel)
-	if err != nil {
-		return fmt.Errorf("error starting transaction: %w", err)
-	}
-
-	// Get queries resource to execute queries
-	q := store.New(conn).WithTx(tx)
-
-	// Get the next available seat
-	seat, err := lockStrategy(ctx, q, tripID)
-	if err != nil {
-		rollbackErr := tx.Rollback(ctx)
-		if rollbackErr != nil {
-			return fmt.Errorf("error rolling back transaction: %w, "+
-				"error getting next available seat for passenger %s, for trip-id: %d, %w", rollbackErr, passenger.Name, tripID, err)
-		}
-
-		return fmt.Errorf("error getting seat for passenger: %s, for trip-id: %d, %w", passenger.Name, tripID, err)
-	}
-
-	// Book a seat for the passenger
-	_, err = q.BookSeat(ctx, store.BookSeatParams{PassengerID: passenger.Identifier, Identifier: seat.ID})
-	if err != nil {
-		rollbackErr := tx.Rollback(ctx)
-		if rollbackErr != nil {
-			return fmt.Errorf("error rolling back transaction: %w, "+
-				"error booking seat for passesger %s for the trip-id: %d, %w", rollbackErr, passenger.Name, tripID, err)
-		}
-
-		return fmt.Errorf("error booking seat for passenger: %s, for the trip-id: %d, %w", passenger.Name, tripID, err)
-
-	}
-
-	err = tx.Commit(ctx)
-	if err != nil {
-		return fmt.Errorf("error committing transaction for passenger: %s, for the trip-id: %d,: %w", passenger.Name, tripID, err)
-	}
-
-	mu.Lock()
-	defer mu.Unlock()
-	reservations[(seat.ID-1)%180] = reservation{seatNumber: seat.SeatID, passengerName: passenger.Name}
-	return nil
-}
-
+// MarkTripForBooking marks a trip as booked in the database.
 func MarkTripForBooking(ctx context.Context, q *store.Queries, tripID int32) error {
 	// Mark the trip as booked
 	_, err := q.MarkTripForBooking(ctx, tripID)
 	if err != nil {
-		return fmt.Errorf("error marking trip as booked: %w", err)
+		return fmt.Errorf("error marking trip for booking: %w", err)
 	}
 
 	return nil
 }
 
-func printBookingDetails(reservations []reservation, tripId int32, t time.Duration) {
+// bookSeatTask handles the booking of a seat for a passenger.
+func bookSeatTask(ctx context.Context,
+	tripID int32,
+	passenger store.Passenger,
+	pool *pgpool.ConnectionPool,
+	seatLockStrategy bookingseat.LockStrategy,
+	isolationLevel pgtx.IsolationLevel,
+	bs chan<- bookingStatus,
+	maxRetries int,
+) {
+	// Acquire a connection from the pool
+	conn := pool.Acquire()
+	defer pool.Release(conn)
 
+	for retry := 1; retry <= maxRetries; retry++ {
+		// Start a transaction
+		tx, err := pgtx.BeginTxWithIsolationLevel(ctx, conn, isolationLevel)
+		if err != nil {
+			retriesLeft := handleRetries(
+				retry,
+				maxRetries,
+				booking{passengerName: passenger.Name},
+				fmt.Errorf("retry %d/%d failed: error starting transaction: %w",
+					retry,
+					maxRetries,
+					err,
+				),
+				bs,
+			)
+			if retriesLeft {
+				continue
+			}
+
+			return
+		}
+
+		// Get queries instance to execute requests in the transaction
+		q := store.New(conn).WithTx(tx)
+
+		// Get the next available seat
+		seat, err := seatLockStrategy(ctx, q, tripID)
+		if err != nil {
+			txErrMsg := fmt.Sprintf("retry %d/%d failed: error getting next available seat for passenger %s",
+				retry,
+				maxRetries,
+				passenger.Name,
+			)
+
+			err = handleTransactionError(ctx, tx, txErrMsg, err)
+			retriesLeft := handleRetries(
+				retry,
+				maxRetries,
+				booking{passengerName: passenger.Name},
+				err,
+				bs)
+			if retriesLeft {
+				continue
+			}
+
+			return
+		}
+
+		// Book a seat for the passenger
+		_, err = q.BookSeat(ctx, store.BookSeatParams{PassengerID: passenger.Identifier, Identifier: seat.ID})
+		if err != nil {
+			txErrMsg := fmt.Sprintf("retry %d/%d failed: error booking seat %s for passenger %s",
+				retry,
+				maxRetries,
+				seat.SeatID,
+				passenger.Name,
+			)
+
+			err = handleTransactionError(ctx, tx, txErrMsg, err)
+			retriesLeft := handleRetries(
+				retry,
+				maxRetries,
+				booking{passengerName: passenger.Name, seatId: seat.SeatID, seatNumber: seat.ID},
+				err,
+				bs)
+			if retriesLeft {
+				continue
+			}
+
+			return
+		}
+
+		err = tx.Commit(ctx)
+		if err != nil {
+			retriesLeft := handleRetries(
+				retry,
+				maxRetries,
+				booking{
+					passengerName: passenger.Name,
+					seatId:        seat.SeatID,
+					seatNumber:    seat.ID,
+				},
+				fmt.Errorf("retry %d/%d failed: error committing transaction for passenger: %s, %w",
+					retry,
+					maxRetries,
+					passenger.Name,
+					err,
+				),
+				bs,
+			)
+			if retriesLeft {
+				continue
+			}
+
+			return
+		}
+
+		bs <- bookingStatus{
+			err: nil,
+			booking: booking{
+				passengerName: passenger.Name,
+				seatId:        seat.SeatID,
+				seatNumber:    seat.ID,
+			},
+		}
+
+		return
+	}
+}
+
+// handleTransactionError handles transaction rollback and sends the error to the result channel.
+func handleTransactionError(ctx context.Context, tx pgx.Tx, msg string, err error) error {
+	errMsg := fmt.Errorf("%s: %w", msg, err)
+	if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+		errMsg = fmt.Errorf("%s: %w, error rolling back transaction: %w", msg, err, rollbackErr)
+	}
+
+	return errMsg
+}
+
+// handleRetries checks if the max retries are exhausted and sends error to the result channel.
+func handleRetries(retry int, maxRetries int, bk booking, err error, bs chan<- bookingStatus) bool {
+	bs <- bookingStatus{
+		err:     err,
+		booking: bk,
+	}
+
+	if pgErr, ok := err.(*pgconn2.PgError); ok && pgErr.Code == "40P01" {
+		// Deadlock detected
+		// This value is tightly coupled with query execution time and "deadlock_timeout" value set in postgresql.conf
+		// TODO: Implement a better way to handle deadlocks
+		// TODO: Try to make this configurable by adding a field deadlock_retry_time_interval in the Config struct
+		time.Sleep(90 * time.Millisecond)
+	}
+
+	// Do we really need 2 separate sleep times for deadlock and other errors?
+	// TODO: Implement a better way to handle deadlocks
+	// TODO: Try to make this configurable by adding a field retry_time_interval in the Config struct
+	time.Sleep(30 * time.Millisecond)
+
+	if allRetriesExhausted(retry, maxRetries) {
+		return false
+	}
+
+	return true
+}
+
+func allRetriesExhausted(retry int, maxRetries int) bool {
+	return maxRetries > 0 && retry >= maxRetries
+}
+
+// print booking process(successful and failed tx) details, including the final reservation details.
+func printBookingAndReservationDetails(reservations []booking, bookings []string, tripID int32, elapsedTime time.Duration) {
+	logrus.Infof("Total time taken to book the seats for trip-id: %d is %v", tripID, elapsedTime)
+
+	fmt.Print("\n\n")
+
+	// Print the booking details, this contains details of the successful, overlapping and failed bookings/transactions.
+	printBookingDetails(bookings)
+
+	fmt.Print("\n\n")
+
+	// Print the final seat reservation details.
+	printReservationDetails(reservations)
+
+	fmt.Print("\n\n\n\n")
+}
+
+func printBookingDetails(bookings []string) {
+	logrus.Info("Booking details:")
+	for _, booking := range bookings {
+		if strings.Contains(booking, "ERROR") {
+			logrus.Error(booking)
+		} else {
+			logrus.Info(booking)
+		}
+	}
+}
+
+func printReservationDetails(reservations []booking) {
+	logrus.Info("Final seat reservation details:")
 	for _, reservation := range reservations {
 		if reservation.passengerName != "" {
-			fmt.Printf("Seat: %s, is assigned to Passenger: %s\n", reservation.seatNumber, reservation.passengerName)
+			logrus.Infof("Seat: %s, is assigned to Passenger: %s", reservation.seatId, reservation.passengerName)
 		}
 	}
 
-	fmt.Print("\n\n")
-	fmt.Printf("Total time taken to book the seats for trip-id: %d is %s\n\n", tripId, t)
-
-	for col := range seatsPerRow {
-		for row := range totalRows {
+	for col := 0; col < seatsPerRow; col++ {
+		for row := 0; row < totalRows; row++ {
 			index := row*seatsPerRow + col
 			if reservations[index].passengerName == "" {
 				fmt.Print(".")
 			} else {
 				fmt.Print("x")
 			}
-
 			// Print a space after each seat except the last one in the column
 			if col == aisleCol && row == totalRows-1 {
 				fmt.Print("\n\n") // Print an extra space for the aisle
@@ -210,6 +376,4 @@ func printBookingDetails(reservations []reservation, tripId int32, t time.Durati
 		// Move to the next column
 		fmt.Println()
 	}
-
-	fmt.Print("\n\n")
 }
